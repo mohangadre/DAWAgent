@@ -1,0 +1,7 @@
+streamlit==1.28.0
+librosa==0.10.1
+pretty_midi==0.2.10
+pydub==0.25.1
+soundfile==0.12.1
+scipy==1.11.3
+numpy==1.24.3
