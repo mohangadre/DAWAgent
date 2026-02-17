@@ -13,30 +13,6 @@ DAWAgent is a powerful Streamlit web application that accurately transcribes aud
 - **Chord Recognition**: Identifies major, minor, diminished, augmented, suspended, 7th, 9th, and other complex chord types
 - **High-Resolution MIDI Output**: Generates MIDI files with 960 ticks per beat resolution
 
-### Supported Instruments
-**Optimized For:**
-- Piano (acoustic, electric)
-- Keyboard instruments
-- Synth with piano-like sounds
-
-**Compatible With:**
-- Guitar (acoustic, clean electric)
-- Bass (electric, upright)
-- String instruments (violin, viola, cello)
-- Brass instruments (trumpet, trombone, French horn)
-- Woodwinds (flute, clarinet, saxophone)
-- Mallet percussion (xylophone, marimba, vibraphone)
-
-**Frequency Range:** ~65 Hz (C2) to 2000 Hz (C7)
-
-### Technical Highlights
-- **Advanced FFT Analysis**: 8x zero-padding for precise frequency detection
-- **Frequency Weighting**: Optimized for detecting weak fundamentals in piano chords
-- **Harmonic Filtering**: Removes overtones to prevent false pitch detection
-- **Octave Duplicate Removal**: Eliminates redundant octave notes
-- **Adaptive Bias Correction**: Compensates for FFT peak deviations at low frequencies
-- **Velocity Normalization**: Ensures consistent velocity output for recordings with low dynamic variation
-
 ## 📋 Requirements
 
 - Python 3.8+
@@ -109,12 +85,7 @@ The app has been extensively tested with:
 - 4-note chords (C major 7th, F major 7th, etc.)
 - Complex chord progressions
 
-## 🚧 Limitations
 
-- Not suitable for unpitched percussion (drums)
-- Performance varies with heavily distorted audio
-- Optimized for clean, studio-quality recordings
-- Frequency weighting is tuned specifically for piano harmonics
 
 ## 🛠️ Built With
 
