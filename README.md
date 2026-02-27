@@ -1,55 +1,5 @@
-# DAWAgent 🎹🎵
 
-**Audio-to-MIDI Transcription Tool with Polyphonic Chord Detection**
 
-DAWAgent is a powerful Streamlit web application that accurately transcribes audio files (WAV/MP3) into MIDI files, with precise pitch detection, timing, velocity, and polyphonic chord recognition.
-
-## 🎯 Features
-
-### Core Capabilities
-- **Polyphonic Pitch Detection**: Detects up to 5 simultaneous notes in chords
-- **Accurate Timing**: Preserves exact note start times, durations, and silences from the original audio
-- **Velocity Detection**: Captures and reproduces note velocities from the audio dynamics
-- **Chord Recognition**: Identifies major, minor, diminished, augmented, suspended, 7th, 9th, and other complex chord types
-- **High-Resolution MIDI Output**: Generates MIDI files with 960 ticks per beat resolution
-
-## 📋 Requirements
-
-- Python 3.8+
-- FFmpeg (for audio processing)
-
-## 🚀 Installation
-
-1. Clone the repository:
-```bash
-git clone https://github.com/mohangadre/DAWAgent.git
-cd DAWAgent
-```
-
-2. Install Python dependencies:
-```bash
-pip install -r requirements.txt
-```
-
-3. Install FFmpeg:
-   - **macOS**: `brew install ffmpeg`
-   - **Ubuntu/Debian**: `sudo apt-get install ffmpeg`
-   - **Windows**: Download from [ffmpeg.org](https://ffmpeg.org/download.html)
-
-## 💻 Usage
-
-1. Start the Streamlit app:
-```bash
-streamlit run app.py
-```
-
-2. Open your browser to `http://localhost:8501`
-
-3. Upload a WAV or MP3 file containing your audio
-
-4. Click "Transcribe to MIDI"
-
-5. Download your generated MIDI file
 
 ## 🎼 How It Works
 
@@ -106,7 +56,7 @@ MIT License - feel free to use and modify for your projects!
 
 ## 🙏 Acknowledgments
 
-Built with extensive testing and iterative refinement to achieve professional-grade audio-to-MIDI transcription accuracy.
+Building with extensive testing and iterative refinement to achieve professional-grade audio-to-MIDI transcription accuracy.
 
 ---
 
