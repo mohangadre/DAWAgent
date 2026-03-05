@@ -220,8 +220,10 @@ def detect_notes_framewise(y, sr):
        # Candidates are sorted strongest-first.  When two candidates are
        # related by a harmonic interval (octave, octave+5th, …), the
        # weaker one is rejected.  Exception: bass octave doubles (lower
-       # note < C3): allow both so melody A3 over chord A2 is preserved.
-       BASS_OCTAVE_CUTOFF = 48   # C3 – below this = bass register
+       # note below bass cutoff): allow both at octave intervals so that
+       # sustained bass notes survive alongside their upper harmonics.
+       BASS_OCTAVE_CUTOFF = 60   # MIDI 60 = C3 (DAW) – below = bass register
+       BASS_OCTAVE_INTERVALS = {12, 24, 36}  # 1/2/3 octave intervals
        fundamentals = []
        hf_kept = []
        hf_rejected = []
@@ -232,7 +234,8 @@ def detect_notes_framewise(y, sr):
                interval = abs(midi_note - fm)
                if interval not in HARMONIC_INTERVALS:
                    continue
-               if interval == 12 and min(midi_note, fm) < BASS_OCTAVE_CUTOFF:
+               if (interval in BASS_OCTAVE_INTERVALS
+                       and min(midi_note, fm) < BASS_OCTAVE_CUTOFF):
                    continue
                is_harm = True
                rejected_by = fm
@@ -312,6 +315,8 @@ def detect_notes_framewise(y, sr):
    # Only used to recover notes the HF rejected as octave harmonics.
    # basic-pitch decides WHETHER a note exists; CQT decides WHEN (timing).
    # Chords are entirely from our CQT pipeline — basic-pitch never touches them.
+   bp_ranges = {}  # default in case basic-pitch fails
+   bp_bass_notes = []
    try:
        import sys
        _tf_blocked = 'tensorflow' not in sys.modules
@@ -403,7 +408,8 @@ def detect_notes_framewise(y, sr):
        # For deep bass notes confirmed by BP, the CQT often anchors on the
        # 2nd harmonic (octave up) as "strongest" and lets the 3rd/5th
        # harmonics through unfiltered.  Remove upper notes that are harmonics
-       # of a BP-confirmed bass note but weren't detected by BP themselves.
+       # of a BP-confirmed bass note AND not confirmed by BP at this
+       # specific frame (frame-level validation, not global pitch set).
        BP_BASS_CUTOFF = 60  # MIDI 60 = displayed C3 — bass register
        bp_pitches_set = set(bp_ranges.keys())
        bp_bass_notes = [p for p in bp_pitches_set if p < BP_BASS_CUTOFF]
@@ -412,7 +418,6 @@ def detect_notes_framewise(y, sr):
            for t in range(len(frame_notes)):
                to_remove = set()
                for bass_p in bp_bass_notes:
-                   # Only active in frames within BP's time range
                    in_range = any(
                        sf <= t <= ef for sf, ef in bp_ranges[bass_p])
                    if not in_range:
@@ -421,9 +426,12 @@ def detect_notes_framewise(y, sr):
                        if note_p == bass_p:
                            continue
                        interval = note_p - bass_p
-                       if (interval in HARMONIC_INTERVALS
-                               and note_p not in bp_pitches_set):
-                           to_remove.add(note_p)
+                       if interval in HARMONIC_INTERVALS:
+                           note_confirmed_here = any(
+                               sf <= t <= ef
+                               for sf, ef in bp_ranges.get(note_p, []))
+                           if not note_confirmed_here:
+                               to_remove.add(note_p)
                if to_remove:
                    frame_notes[t] -= to_remove
                    overtone_removals += len(to_remove)
@@ -431,6 +439,22 @@ def detect_notes_framewise(y, sr):
                logger.info(
                    f"BP bass overtone cleanup: removed {overtone_removals} "
                    f"overtone instances across frames")
+
+       # --- BP bass note insertion pass ----------------------------------------
+       # The HF often rejects bass notes as harmonics of higher notes
+       # (e.g. G2 rejected as 3rd harmonic of B4).  For BP-confirmed bass
+       # notes, ensure they appear in frame_notes during their active ranges.
+       bass_insertions = 0
+       for bass_p in bp_bass_notes:
+           for sf_bp, ef_bp in bp_ranges[bass_p]:
+               for t in range(sf_bp, min(ef_bp + 1, len(frame_notes))):
+                   if bass_p not in frame_notes[t] and frame_rms[t] >= noise_floor:
+                       frame_notes[t].add(bass_p)
+                       bass_insertions += 1
+       if bass_insertions > 0:
+           logger.info(
+               f"BP bass insertion: added {bass_insertions} bass note "
+               f"instances across frames")
 
    except Exception as e:
        logger.warning(f"Basic-pitch referee failed (falling back): {e}")
@@ -509,7 +533,7 @@ def detect_notes_framewise(y, sr):
    # A chord change is detected when the frame_notes set changes
    # significantly: notes appear AND/OR disappear.
    logger.info("Detecting chord changes from frame content...")
-   chord_change_onsets = set()
+   chord_change_onsets = {}  # onset_time -> set of gone pitches
 
 
    for oi, onset_frame in enumerate(onset_frames_arr):
@@ -552,26 +576,44 @@ def detect_notes_framewise(y, sr):
                break
 
        if sustained_departure:
-           chord_change_onsets.add(onset_time)
+           chord_change_onsets[onset_time] = gone_notes
            logger.info(
                f"  Chord change @{onset_time:.3f}s: "
                f"new={[midi_to_note_name(m) for m in sorted(new_notes)]}, "
                f"gone={[midi_to_note_name(m) for m in sorted(gone_notes)]}")
 
+   BASS_SUSTAIN_CUTOFF = 72  # MIDI 72 = C4 (DAW) — below middle C = bass register
+   bass_level_changes = set()
 
-   # Re-articulate: split all notes at chord-change onsets
+   # Re-articulate: split notes at chord-change onsets.
+   # Bass notes are exempt from splits caused by purely melodic changes
+   # (where no bass note arrives or departs).  When another bass note
+   # is in the new/gone set, all notes — including sustained bass — split.
    if chord_change_onsets:
+       for onset_t, gone in chord_change_onsets.items():
+           pre_f = max(0, int(round(onset_t / (hop / sr))) - 5)
+           post_f = min(len(frame_notes) - 1,
+                        int(round(onset_t / (hop / sr))) + 5)
+           pre_set = frame_notes[pre_f] if pre_f < len(frame_notes) else set()
+           post_set = frame_notes[post_f] if post_f < len(frame_notes) else set()
+           new_notes = post_set - pre_set
+           has_bass_change = any(
+               p < BASS_SUSTAIN_CUTOFF for p in (gone | new_notes))
+           if has_bass_change:
+               bass_level_changes.add(onset_t)
+
        new_events = []
        for note in note_events:
            margin = 0.04
            splits = sorted(
                t for t in chord_change_onsets
                if note['start'] + margin < t < note['end'] - margin
+               and (note['pitch'] >= BASS_SUSTAIN_CUTOFF
+                    or t in bass_level_changes)
            )
            if not splits:
                new_events.append(note)
                continue
-
 
            boundaries = [note['start']] + splits + [note['end']]
            for k in range(len(boundaries) - 1):
@@ -676,6 +718,131 @@ def detect_notes_framewise(y, sr):
 
    logger.info(f"Per-note re-articulations: {reartic_count}")
 
+   # --- Direct BP bass event creation ----------------------------------------
+   # For bass notes, bypass the CQT tracker entirely and create events
+   # directly from BP's segments.  Strategy:
+   #   0. Filter BP bass pitches that are octave harmonics of lower BP bass
+   #   1. Merge contiguous BP segments (gap ≤ 50ms) — melody-induced splits
+   #   2. Real gaps (> 50ms) stay as separate events
+   #   3. Split at chord changes involving BP-confirmed bass note movement;
+   #      discard residual segments where the pitch itself was "gone"
+   BASS_DIRECT_CUTOFF = 72  # MIDI 72 = C4 (DAW)
+   CONTIGUOUS_GAP = 0.05    # merge BP segments with gaps ≤ 50ms
+   if bp_ranges and bp_bass_notes:
+       bp_bass_pitches = set(p for p in bp_ranges if p < BASS_DIRECT_CUTOFF)
+
+       # Step 0: filter octave-harmonic overtones
+       OCTAVE_INTERVALS = {12, 24, 36}
+       overtone_pitches = set()
+       for p in sorted(bp_bass_pitches):
+           for lower_p in bp_bass_pitches:
+               if lower_p >= p:
+                   continue
+               if (p - lower_p) not in OCTAVE_INTERVALS:
+                   continue
+               p_segs = bp_ranges[p]
+               lower_segs = bp_ranges[lower_p]
+               p_min = min(s for s, _ in p_segs)
+               p_max = max(e for _, e in p_segs)
+               if any(s <= p_max and e >= p_min for s, e in lower_segs):
+                   overtone_pitches.add(p)
+                   logger.info(
+                       f"  BP bass overtone filter: {midi_to_note_name(p)} "
+                       f"is octave of {midi_to_note_name(lower_p)} → skipped")
+                   break
+
+       bp_valid_bass = bp_bass_pitches - overtone_pitches
+
+       # Build refined bass chord changes: only changes where a
+       # BP-confirmed (non-overtone) bass pitch arrives or departs
+       frame_dur = hop / sr
+       refined_bass_changes = {}
+       for onset_t, gone in chord_change_onsets.items():
+           of = max(0, int(round(onset_t / frame_dur)))
+           pre_f = max(0, of - 5)
+           post_f = min(len(frame_notes) - 1, of + 5)
+           pre_set = frame_notes[pre_f] if pre_f < len(frame_notes) else set()
+           post_set = frame_notes[post_f] if post_f < len(frame_notes) else set()
+           new_notes = post_set - pre_set
+           bass_gone = set(
+               p for p in gone if p < BASS_DIRECT_CUTOFF and p in bp_valid_bass)
+           bass_new = set(
+               p for p in new_notes
+               if p < BASS_DIRECT_CUTOFF and p in bp_valid_bass)
+           if bass_gone or bass_new:
+               refined_bass_changes[onset_t] = bass_gone
+
+       bass_change_times = sorted(refined_bass_changes.keys())
+
+       # Build BP-derived bass events
+       bp_bass_events = []
+       for bass_p in sorted(bp_valid_bass):
+           segs = bp_ranges[bass_p]
+           bp_times = []
+           for sf_bp, ef_bp in segs:
+               seg_s = float(cqt_times[min(sf_bp, num_frames - 1)])
+               seg_e = float(cqt_times[min(ef_bp, num_frames - 1)])
+               if seg_e > seg_s:
+                   bp_times.append((seg_s, seg_e))
+           if not bp_times:
+               continue
+           bp_times.sort()
+
+           # Step 1: merge contiguous segments (gap ≤ CONTIGUOUS_GAP)
+           merged = [list(bp_times[0])]
+           for seg_s, seg_e in bp_times[1:]:
+               if seg_s - merged[-1][1] <= CONTIGUOUS_GAP:
+                   merged[-1][1] = max(merged[-1][1], seg_e)
+               else:
+                   merged.append([seg_s, seg_e])
+
+           # Step 2: split at refined bass chord changes, then discard
+           # residual tails where this pitch was in the "gone" set
+           final_segs = []
+           for seg_s, seg_e in merged:
+               splits = sorted(
+                   t for t in bass_change_times
+                   if seg_s + 0.04 < t < seg_e - 0.04)
+               if not splits:
+                   final_segs.append((seg_s, seg_e))
+               else:
+                   boundaries = [seg_s] + splits + [seg_e]
+                   for k in range(len(boundaries) - 1):
+                       s, e = boundaries[k], boundaries[k + 1]
+                       if e - s < 0.05:
+                           continue
+                       if k > 0:
+                           gone_at_split = refined_bass_changes.get(
+                               boundaries[k], set())
+                           if bass_p in gone_at_split:
+                               logger.info(
+                                   f"  Discarding residual "
+                                   f"{midi_to_note_name(bass_p)} after "
+                                   f"{boundaries[k]:.3f}s (pitch was 'gone')")
+                               continue
+                       final_segs.append((s, e))
+
+           for seg_s, seg_e in final_segs:
+               bp_bass_events.append({
+                   'pitch': int(bass_p),
+                   'start': float(seg_s),
+                   'end': float(seg_e),
+                   'velocity_raw': 70,
+               })
+
+       # Diagnostic: log each BP-derived bass event
+       for ev in sorted(bp_bass_events, key=lambda e: (e['pitch'], e['start'])):
+           note_name = midi_to_note_name(ev['pitch'])
+           logger.info(f"  BP bass event: {note_name} "
+                       f"{ev['start']:.3f}s – {ev['end']:.3f}s "
+                       f"({ev['end'] - ev['start']:.3f}s)")
+
+       # Replace tracker's bass events with BP-derived ones
+       tracker_bass = [n for n in note_events if n['pitch'] < BASS_DIRECT_CUTOFF]
+       melody_events = [n for n in note_events if n['pitch'] >= BASS_DIRECT_CUTOFF]
+       logger.info(f"Replacing {len(tracker_bass)} tracker bass events with "
+                   f"{len(bp_bass_events)} BP-derived bass events")
+       note_events = melody_events + bp_bass_events
 
    note_events.sort(key=lambda n: (n['start'], n['pitch']))
    logger.info(f"Final note events: {len(note_events)}")
@@ -920,20 +1087,12 @@ def generate_midi(audio_analysis, filename):
 
 
    # --- Velocity normalisation -----------------------------------------------
-   raw_vels = [n['velocity_raw'] for n in notes]
-   median_vel = float(np.median(raw_vels))
-   std_vel = float(np.std(raw_vels))
-   logger.info(f"Velocity stats: median={median_vel:.1f}, std={std_vel:.1f}")
-
-
-   if std_vel < 20:
-       norm_vel = int(np.clip(median_vel, 30, 120))
-       velocities = [norm_vel] * len(notes)
-       logger.info(f"Consistent dynamics – all velocities set to {norm_vel}")
-   else:
-       scale = 97.0 / median_vel if median_vel > 0 else 1.0
-       velocities = [int(np.clip(v * scale, 1, 127)) for v in raw_vels]
-       logger.info("Dynamic variation preserved, scaled around 97")
+   # CQT magnitude at the fundamental bin is unreliable as a velocity proxy:
+   # bass fundamentals are inherently weaker than upper partials, creating
+   # a huge artificial dynamic spread.  Set all notes to a uniform velocity.
+   UNIFORM_VEL = 70
+   velocities = [UNIFORM_VEL] * len(notes)
+   logger.info(f"All velocities set to {UNIFORM_VEL}")
 
 
    # --- Group notes by approximate start time for logging --------------------
@@ -1239,6 +1398,7 @@ def main():
 
 if __name__ == "__main__":
    main()
+
 
 
 
