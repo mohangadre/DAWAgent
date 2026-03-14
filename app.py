@@ -918,8 +918,17 @@ def _emit_note(note_events, pitch, start_frame, end_frame, cqt_times, C,
    A short note that barely survives the duration check above gets fitered out here.
    This 5% energy gate is currently filtering out the grace notes in "Für Elise". We should consider lowering this threshold to 1% or by also making it adaptive based on tempo.
    
-   A potential issue that might arise from lowering to 1% is that we might start finding too many false positives in the output. If min_duration is changed, we should leave it as that but instead change this energy gate.
+   A potential issue that might arise from lowering to 1% is that we might start finding too many false positives in the output. 
+   If min_duration is changed, we should leave it as that but instead change this energy gate.
    '''
+
+   '''Tried an approach where only if basic pitch detects it as a note, it can be output. This led to too few notes. 
+   Lowering the threshold led to too many notes. I tried using a balance of both and did not yield any significant change. The notes in the 
+   test file are also extremely short and there are no sustaining notes so the number of frames for note detection might be something to tinker
+   with '''
+
+   
+
    
 
 
